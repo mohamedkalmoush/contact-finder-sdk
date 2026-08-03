@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# PyPI REQUIRES hyphens here, not underscores!
+name = "contact-finder-sdk"
+version = "1.0.0"
+description = "A robust, high-concurrency async SDK for the Website Contact Finder API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Mohamed Kalmoush", email = "mohamedkalmoush1234@gmail.com"},
+]
+keywords = ["rapidapi", "scraper", "contacts", "emails", "lead-generation", "sdk", "async"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "aiohttp>=3.14.3",
+    "tqdm>=4.70.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/mohamedkalmoush/contact-finder-sdk"
+"Bug Tracker" = "https://github.com/mohamedkalmoush/contact-finder-sdk/issues"
+
+[tool.setuptools.packages.find]
+include = ["contact_finder_sdk*"]
