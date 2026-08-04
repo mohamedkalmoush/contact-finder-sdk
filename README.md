@@ -140,26 +140,28 @@ finder.run(
 
 ---
 
-## ⚡ Advanced: Streaming Data & Reducing Payload Size
+## ⚡ Advanced: Streaming Data & Payload Optimization
 
-By default, `auto_store=True` and all API extraction flags (`profile`, `visuals`, `meta`) are set to `"true"`. This fetches *everything* to build robust local CSV/JSONL files, which is the recommended approach for most users to ensure data safety and resumability.
+By default, `auto_store=True` and all API extraction flags (`profile`, `visuals`, `meta`) are set to `"true"`. This fetches *everything* and safely writes it to local CSV/JSONL files, which is the recommended approach for most users.
 
-However, if you are an advanced user building a high-volume pipeline where you just want to stream contacts directly into your own database via `on_success` and don't need local files (`auto_store=False`), you can override these defaults to reduce the payload size.
+However, if you are building a high-volume pipeline and only need to stream data directly into your database via `on_success`, you can optimize your workflow in two ways:
 
-**💡 Pro-Tip for High-Volume Pipelines:** By changing the defaults from `"true"` to `"false"`, you tell the API to skip heavy extraction. This drastically reduces the JSON payload size, saves massive amounts of **bandwidth**, and significantly speeds up your high-concurrency async requests.
+**💡 Pro-Tip for High-Volume Pipelines:**
+1. **Speed up your local workflow:** Set `auto_store=False`. Bypassing local file generation eliminates disk I/O, significantly speeding up your Python script's execution when you only need the `on_success` callback.
+2. **Reduce payload size & save bandwidth:** Change the extraction flags (`profile`, `visuals`, `meta`) to `"false"`. This tells the API to skip heavy extraction, drastically reducing the RapidAPI response payload size and saving massive amounts of **bandwidth** when processing millions of requests. *(Note: This reduces network transfer size, but does not significantly speed up the API's internal scraping time).*
 
 ```python
 finder.run(
     urls=target_urls,
     on_success=save_to_my_db,   # Process data in real-time
-    auto_store=True,            # Default: True. Safely stores data to local files.
+    auto_store=True,            # Default: True. Set to False to skip disk I/O and speed up execution.
     parse_mode="contact",       # Default: "raw". Use "contact" for emails/phones.
     
     # API Overrides (Defaults are all "true" to fetch complete data for auto_store)
-    # Change these to "false" ONLY if you don't need to store full data to files:
-    profile="true",             # Default: "true". Fetches company profile data.
-    visuals="true",             # Default: "true". Fetches image/logo data.
-    meta="true"                 # Default: "true". Fetches meta tag data.
+    # Change these to "false" to reduce response payload size and save bandwidth:
+    profile="true",             # Default: "true". Set to "false" to skip company profile extraction.
+    visuals="true",             # Default: "true". Set to "false" to skip image/logo extraction.
+    meta="true"                 # Default: "true". Set to "false" to skip meta tag extraction.
 )
 ```
 
