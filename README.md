@@ -11,8 +11,8 @@ A robust, high-concurrency async Python SDK for the **Website Contact Finder API
 * 🚀 **Async & High Concurrency:** Processes hundreds of URLs simultaneously using `asyncio` and `aiohttp`.
 * 🗂️ **Multi-Project Isolation:** Run multiple scrapers at once. Each `project_name` gets its own isolated data folder.
 * 🔄 **Smart Deduplication & Caching:** Automatically skips URLs it has already scraped and resumes where it left off.
-* 💾 **Auto-Storage:** Automatically saves results to structured `.jsonl` and `.csv` files.
-* 🪝 **Real-time Callbacks:** Pass an `on_success` function to process data instantly as it arrives.
+* 💾 **Batteries-Included Auto-Storage:** Automatically saves results to beautifully structured `.json` and `.csv` files.
+* 🪝 **Real-time Callbacks:** Pass an `on_success` function to process data instantly as it arrives (if you want to).
 
 ---
 
@@ -39,45 +39,38 @@ Once subscribed, go to the **Endpoints** tab on the API dashboard. Click on any 
 
 ---
 
-## 🚀 Quick Start (The Simplest Way)
+## 🚀 Quick Start (The "WTF, Is That It?" Way)
 
-The easiest way to use the SDK is to pass a Python list of URLs directly.
+We believe the best SDKs get out of your way. You don't need to write loops, handle callbacks, or manually parse and save files. 
+
+Just pass your URLs, and the SDK automatically scrapes, extracts emails/phones/socials, and drops perfectly formatted `.csv` and `.json` files into a folder named after your project.
 
 ```python
 from contact_finder_sdk import ContactFinder
 
-# Define what happens when a URL is successfully scraped
-def handle_result(data):
-    url = data.get("url") or data.get("data", {}).get("url")
-    print(f"✅ Successfully scraped: {url}")
+target_urls = ["https://rapidapi.com", "https://github.com"]
 
-# Initialize the SDK
-finder = ContactFinder(
-    api_key="YOUR_RAPIDAPI_KEY_HERE", 
-    project_name="quick_test"
-)
+# 1. Initialize with your credentials and project name
+finder = ContactFinder(api_key="YOUR_RAPIDAPI_KEY", concurrency=5, project_name="my_first_scrape")
 
-# Run the scraper
-finder.run(
-    urls=["https://rapidapi.com", "https://github.com"],
-    parse_mode="contact",       # Extracts emails, phones, and socials
-    on_success=handle_result,   # Triggered for every success
-    auto_store=True             # Saves results to a local 'data/' folder
-)
+# 2. Pass the URLs. The SDK does everything else.
+finder.run(urls=target_urls)
 ```
+
+> 🎉 **That's really it.** Under the hood, the SDK handles high-concurrency async scraping, deduplication, and automatically generates `contacts.csv`, `contacts.json`, and a raw cache inside a local `./my_first_scrape/` directory.
 
 ---
 
 ## 📂 Reading from a CSV File
 
-If you have a large list of URLs, pass a CSV file instead. The SDK will automatically read the file, extract the URLs, and process them.
+If you have a massive list of URLs, you don't need to load them into a Python list first. Just pass a CSV file. The SDK will automatically read the file, extract the URLs, and process them.
 
 ```python
 finder.run(
+    urls=None,                  # Not needed when using a file
     file_path="my_urls.csv",    # Path to your CSV file
     url_field_name="url",       # The name of the column containing the URLs
     parse_mode="full",          # Gets contact + profile + visuals + meta
-    auto_store=True
 )
 ```
 
@@ -87,25 +80,25 @@ finder.run(
 
 One of the most powerful features is **Project Isolation**. If you are managing multiple clients or campaigns, simply assign a different `project_name` to each instance. 
 
-The SDK will automatically create separate, isolated folders for each project inside a local `data/` directory. Their caches, CSVs, and logs will never mix.
+The SDK will automatically create separate, isolated folders for each project inside a local directory. Their caches, CSVs, and logs will never mix.
 
 ```python
 # Instance 1: Client A
 finder_a = ContactFinder(api_key="YOUR_KEY", project_name="client_A")
-finder_a.run(urls=["https://client-a.com"], auto_store=True)
-# Saves to: ./data/client_A/
+finder_a.run(urls=["https://client-a.com"])
+# Automatically saves to: ./client_A/
 
 # Instance 2: Client B
 finder_b = ContactFinder(api_key="YOUR_KEY", project_name="client_B")
-finder_b.run(urls=["https://client-b.com"], auto_store=True)
-# Saves to: ./data/client_B/
+finder_b.run(urls=["https://client-b.com"])
+# Automatically saves to: ./client_B/
 ```
 
 ---
 
-## ⚙️ Configuration Parameters
+## ⚙️ Advanced Configuration
 
-When calling `finder.run()`, you can customize the behavior:
+The Quick Start uses smart defaults. But if you want more control over the output and behavior, `finder.run()` accepts several optional parameters:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
@@ -113,32 +106,31 @@ When calling `finder.run()`, you can customize the behavior:
 | `file_path` | `str` | `None` | Path to a `.csv` or `.txt` file containing URLs. |
 | `url_field_name`| `str` | `"url"` | The column name to look for if using a CSV file. |
 | `dedup_key` | `str` | `"url"` | The key used to check for duplicates. |
-| `parse_mode` | `str` | `"raw"` | How to format the callback data (`"raw"`, `"contact"`, or `"full"`). |
+| `parse_mode` | `str` | `"contact"`| How to format the callback data (`"raw"`, `"contact"`, or `"full"`). |
 | `on_success` | `Callable`| `None` | A function to execute immediately when a URL succeeds. |
-| `auto_store` | `bool` | `True` | If `True`, saves outputs to local `.jsonl` and `.csv` files. |
+| `auto_store` | `bool` | `True` | If `True`, automatically saves outputs to local files. |
 | `**api_kwargs` | `kwargs` | `{}` | Override default RapidAPI params (e.g., `profile="false"`). |
 
 ### 🔍 Parse Modes Explained
 
-* **`"raw"`**: Returns the exact, untouched JSON dictionary from the RapidAPI response.
-* **`"contact"`**: Returns a flattened dictionary containing only core contact info (Emails, Phones, Social Media links).
+* **`"contact"` (Default)**: Returns a flattened dictionary containing only core contact info (Emails, Phones, Social Media links).
 * **`"full"`**: Returns a massive flattened dictionary containing Contact info + Company Profile + Visuals + Meta tags.
+* **`"raw"`**: Returns the exact, untouched JSON dictionary from the RapidAPI response.
 
 ---
 
 ## 💾 Output Files
 
-When `auto_store=True`, the SDK generates a `data/<project_name>/` folder containing:
+When `auto_store=True` (which is the default), the SDK generates a `<project_name>/` folder containing:
 
 | File | Description |
 | :--- | :--- |
-| `full.jsonl` | The master database of all parsed, flattened records. |
+| `contacts.json` | The master database of all parsed, flattened records. |
 | `raw.jsonl` | A cache of the raw API responses (used to prevent re-scraping). |
-| `full.csv` | A spreadsheet version of the master database. |
-| `contact.csv`| A lightweight spreadsheet with only contact info. |
+| `contacts.csv` | A spreadsheet version of the master database. |
 | `failed.log` | A log of URLs that failed to scrape, with error reasons. |
 
-*Note: The SDK is resumable. If your script crashes, simply run it again. It will read `raw.jsonl`, skip the URLs it already finished, and pick up exactly where it left off!*
+*Note: The SDK is resumable. If your script crashes, simply run it again. It will read the cache, skip the URLs it already finished, and pick up exactly where it left off!*
 
 ---
 
