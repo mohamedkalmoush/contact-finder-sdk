@@ -22,11 +22,20 @@ A robust, high-concurrency async Python SDK for the **Website Contact Finder API
 pip install contact-finder-sdk
 ```
 
-## 🔑 Prerequisites
+## 🔑 Prerequisites & API Key Setup
 
-You need a RapidAPI key to use this SDK.
-1. Go to the [Website Contact Finder API on RapidAPI](https://rapidapi.com/).
-2. Subscribe to the API and copy your `X-RapidAPI-Key`.
+This SDK connects to the [**Website Contact Finder**](https://rapidapi.com/scrapeeg/api/website-contact-finder) API hosted on RapidAPI. You will need an API key to start scraping.
+
+**1. Subscribe to the Free Plan**
+Visit our [RapidAPI Pricing Page](https://rapidapi.com/scrapeeg/api/website-contact-finder/pricing).
+* Click **"Subscribe"** or **"Start Free Plan"**.
+* Log in to RapidAPI (using "Continue with Google" is the fastest).
+* Select the **Free Plan** (usually the first one on the left) and click **"Subscribe"** in the top right corner. *(No credit card required!)*
+
+**2. Copy Your API Key**
+Once subscribed, go to the **Endpoints** tab on the API dashboard. Click on any endpoint, and look at the code snippet on the right side of the screen. Copy the long string value for `x-rapidapi-key`.
+
+> 💡 **Need help?** If you get stuck or have questions about the API, message me directly on [WhatsApp](https://api.whatsapp.com/send?phone=201141843921) or [Telegram](https://t.me/MohamedKalmoush) and I'll walk you through it personally!
 
 ---
 
