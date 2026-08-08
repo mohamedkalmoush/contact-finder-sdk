@@ -107,6 +107,13 @@ class ContactFinder:
                     if json_data and not api_error:
                         # 1. ALWAYS parse as "full" for SDK storage (Master Record)
                         full_row = self.parser.parse(json_data, parse_mode="full")
+                        if not self.parser.has_contact_data(full_row):
+                            fail_count += 1
+                            self.storage.log_failed_url(url, "No contact info found")
+                            pbar.set_description(f"⚠ EMPTY {(d:=full_row.get('domain') or url)[:20]+(' .. ' if len(d)>20 else ''):<24}")
+                            pbar.set_postfix(saved=success_count, cached=cached_count, skipped=skip_count, failed=fail_count, refresh=False)
+                            pbar.update(1)
+                            continue
 
                         # 2. INSTANTLY call the user's function with THEIR requested parse_mode
                         if self.on_success:

@@ -74,6 +74,13 @@ class ResponseParser:
 
         raise ValueError(f"Invalid parse_mode: '{parse_mode}'. Choose from 'raw', 'contact', or 'full'.")
 
+    def has_contact_data(self, row: dict) -> bool:
+        """Returns True if the parsed row contains any meaningful contact info."""
+        emails_num = int(row.get("emails_num") or 0)
+        phones_num = int(row.get("phones_num") or 0)
+
+        return bool(row.get("emails") or row.get("phones") or row.get("social_all") or emails_num > 0 or phones_num > 0)
+
     def build_csv_fields(self) -> list[str]:
         return list(dict.fromkeys(
             key for parser in self._ACTIVE_PARSERS for key in parser({})
