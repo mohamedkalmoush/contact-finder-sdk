@@ -1,22 +1,25 @@
 import asyncio
 import aiohttp
 from contact_finder_sdk.config import (
-    RAPIDAPI_URL, RAPIDAPI_HOST, RAPIDAPI_DEFAULT_PARAMS,
-    MAX_RETRIES, RETRY_BACKOFF_SECONDS, TRANSIENT_ERROR_PHRASES,
+    SCRAPEEG_URL, RAPIDAPI_HOST, RAPIDAPI_DEFAULT_PARAMS,
+    MAX_RETRIES, RETRY_BACKOFF_SECONDS, REQUEST_TIMEOUT, TRANSIENT_ERROR_PHRASES
 )
 
 class APIClient:
-    """Handles async HTTP requests to RapidAPI with retry logic."""
-
-    def __init__(self, api_key: str, host: str = RAPIDAPI_HOST, max_retries: int = MAX_RETRIES, retry_backoff: int = RETRY_BACKOFF_SECONDS):
-        self.base_url = f"https://{host}/"
-        self.headers = {
-            "x-rapidapi-key": api_key,
-            "x-rapidapi-host": host,
-            "Content-Type": "application/json"
-        }
+    def __init__(self, api_key: str, source: str = "website", max_retries: int = MAX_RETRIES, retry_backoff: int = RETRY_BACKOFF_SECONDS):
+        self.source = source.lower()
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+
+        if self.source == "website":
+            self.base_url = SCRAPEEG_URL
+            self.headers = {"X-Api-Key": api_key}
+        elif self.source == "rapidapi":
+            self.base_url = f"https://{RAPIDAPI_HOST}/"
+            self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": RAPIDAPI_HOST, "Content-Type": "application/json"}
+        else:
+            raise ValueError("source must be 'website' or 'rapidapi'")
+
 
     @staticmethod
     def _is_transient_error(message: str) -> bool:
@@ -38,18 +41,40 @@ class APIClient:
         async with semaphore:
             for attempt in range(1, self.max_retries + 1):
                 try:
-                    async with session.get(self.base_url, headers=self.headers, params=params) as response:
-                        response.raise_for_status()
-                        result = await response.json(content_type=None)
+                    async with session.get(self.base_url, headers=self.headers, params=params, timeout=REQUEST_TIMEOUT) as response:
 
-                    api_error = (result or {}).get("error")
-                    if api_error and self._is_transient_error(api_error) and attempt < self.max_retries:
-                        await asyncio.sleep(self.retry_backoff * attempt)
-                        last_error = api_error
-                        continue
-                    return url, result
+                        # 1. HANDLE WEBSITE API ERRORS (401, 403, 429, 500)
+                        if response.status >= 400:
+                            try:
+                                err_json = await response.json()
+                                last_error = err_json.get("detail", f"HTTP {response.status}")
+                            except Exception:
+                                last_error = f"HTTP {response.status}: {await response.text()}"
+
+                            # Stop immediately on Auth or Credit errors
+                            if response.status in (401, 403):
+                                return url, {"error": last_error}
+
+                            # Retry on Rate Limits or Server Errors
+                            if attempt < self.max_retries:
+                                await asyncio.sleep(self.retry_backoff * attempt)
+                                continue
+                            return url, {"error": last_error}
+
+                        # 2. HANDLE ENGINE JSON (HTTP 200 OK)
+                        result = await response.json(content_type=None)
+                        api_error = (result or {}).get("error")
+
+                        # Retry if the engine itself returned a transient error
+                        if api_error and self._is_transient_error(api_error) and attempt < self.max_retries:
+                            await asyncio.sleep(self.retry_backoff * attempt)
+                            last_error = api_error
+                            continue
+
+                        return url, result
 
                 except (aiohttp.ClientResponseError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    # 3. HANDLE NETWORK ERRORS (DNS, Connection Refused, Timeout)
                     last_error = str(err)
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_backoff * attempt)

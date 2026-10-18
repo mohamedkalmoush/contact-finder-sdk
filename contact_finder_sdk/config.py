@@ -2,6 +2,11 @@ import os
 import aiohttp
 
 
+# ── Website API Settings ─────────────────────────────────────────────────────────────
+SCRAPEEG_URL = "https://scrapeeg.org/v1/contact/search"
+# base_url = "http://132.0.0.1:8000/scrape"        # this for local fastapi
+headers  = {}
+
 # ── RapidAPI SDK Settings (For your users) ──────────────────────────────────
 RAPIDAPI_HOST = "website-contact-finder.p.rapidapi.com"
 RAPIDAPI_URL = f"https://{RAPIDAPI_HOST}/"
@@ -15,12 +20,23 @@ RAPIDAPI_DEFAULT_PARAMS = {
     "meta": "true"
 }
 
+
+# currently not being used
+REQUESTER = "rnet"
+FULL = True
+INCLUDE_CONTACT = False
+INCLUDE_SOURCES = False
+INCLUDE_PROFILE = False
+INCLUDE_VISUALS = False
+INCLUDE_META = False
+
 # ── Concurrency & Retry Settings ─────────────────────────────────────────────
 CONCURRENCY = 30
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 2
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 TRANSIENT_ERROR_PHRASES = ["timeout", "rate limit", "too many requests", "service unavailable", "502", "503", "504"]
+
 
 
 # --- DYNAMIC PATHS (The Class) ---
@@ -45,7 +61,7 @@ class Config:
         # Input file config (MOVED HERE so it updates when project changes)
         self.URLS_DIR = os.path.join(self.BASE_DIR, "urls", self.PROJECT_NAME)
         # os.makedirs(self.URLS_DIR, exist_ok=True)
-        self.URLS_FILE_PATH = os.path.join(self.URLS_DIR, "urls.csv")
+        self.URLS_FILE_PATH = os.path.join(self.URLS_DIR, "website_contact_finder_with_emails.csv")
         self.URL_FIELD_NAME = "url"
         self.DEDUP_KEY = "url"
 

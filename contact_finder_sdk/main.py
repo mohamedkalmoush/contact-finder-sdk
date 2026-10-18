@@ -9,15 +9,16 @@ from contact_finder_sdk.storage import StorageManager
 from contact_finder_sdk.client import APIClient
 
 class ContactFinder:
-    def __init__(self, api_key: str, host: str = "website-contact-finder.p.rapidapi.com", concurrency: int = 25, project_name: str = "default_project"):
+    # def __init__(self, api_key: str, host: str = "website-contact-finder.p.rapidapi.com", concurrency: int = 25, project_name: str = "default_project", use_vps: bool = False):
+    def __init__(self, api_key: str, source: str = "website", concurrency: int = 25, project_name: str = "default_project"):
         # 1. Create an isolated config for this instance
         self.local_config = Config()
         self.local_config.set_project(project_name)
-
         self.url_manager = URLManager(project_config=self.local_config)
+
         # 2. Initialize StorageManager AFTER config is updated so it grabs the new paths
         self.storage = StorageManager(dedup_key="url", auto_store=True, project_config=self.local_config)
-        self.client = APIClient(api_key=api_key, host=host)
+        self.client = APIClient(api_key=api_key, source=source)
         self.concurrency = concurrency
         self.dedup_key = "url"
         self.parser = ResponseParser()
@@ -48,6 +49,8 @@ class ContactFinder:
         urls = URLManager.remove_duplicates(urls)     # remove urls duplicates
 
         print('Total websites to process: ', len(urls))
+        print(f"Scraping: {len(urls)} URLs")
+
         if self.auto_store:
             self.url_manager.ensure_data_dir()
 

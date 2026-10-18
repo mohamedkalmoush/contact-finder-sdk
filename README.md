@@ -1,6 +1,6 @@
 # 🕵️ Contact Finder SDK
 
-[![PyPI version](https://img.shields.io/badge/pypi-v1.0.0-blue.svg)](https://pypi.org/project/contact-finder-sdk/)
+[![PyPI version](https://img.shields.io/badge/pypi-v1.1.0-blue.svg)](https://pypi.org/project/contact-finder-sdk/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -9,7 +9,7 @@ A robust, high-concurrency async Python SDK for the **Website Contact Finder API
 ## ✨ Key Features
 
 * 🚀 **Async & High Concurrency:** Processes hundreds of URLs simultaneously using `asyncio` and `aiohttp`.
-* 🛡️ **Crash-Proof Resumability:** Caches raw API responses locally. If your script crashes, it resumes exactly where it left off without wasting your RapidAPI quota.
+* 🛡️ **Crash-Proof Resumability:** Caches raw API responses locally. If your script crashes, it resumes exactly where it left off without wasting your API credits.
 * 🔄 **Self-Healing Storage:** Automatically detects missing files and rebuilds them. If you delete a CSV, it rebuilds it from the JSONL. If you delete the JSONL, it rebuilds it from the CSV.
 * 📊 **Dynamic CSV Headers:** Uses atomic file rewrites to dynamically add new columns if the API returns unexpected fields, without corrupting existing data.
 * 🗂️ **Multi-Project Isolation:** Run multiple scrapers at once. Each `project_name` gets its own isolated data folder.
@@ -25,7 +25,18 @@ pip install contact-finder-sdk
 
 ## 🔑 Prerequisites & API Key Setup
 
-This SDK connects to the [**Website Contact Finder**](https://rapidapi.com/scrapeeg/api/website-contact-finder) API hosted on RapidAPI. You will need an API key to start scraping.
+You can use this SDK with our **Direct Website API** (recommended) or via **RapidAPI**. 
+
+### Option 1: Direct Website API (Fastest)
+Skip the RapidAPI dashboard entirely. You can get a key directly from our website.
+1. Visit **[scrapeeg.org/signup](https://scrapeeg.org/signup)** to create a free account.
+2. You get **250 free credits** instantly (no credit card required).
+3. Go to your Dashboard, click **"Create API key"**, and copy the key.
+
+---
+
+### Option 2: RapidAPI
+This SDK also connects to the [**Website Contact Finder**](https://rapidapi.com/scrapeeg/api/website-contact-finder) API hosted on RapidAPI.
 
 **1. Subscribe to the Free Plan**
 Visit our [RapidAPI Pricing Page](https://rapidapi.com/scrapeeg/api/website-contact-finder/pricing).
@@ -51,10 +62,13 @@ from contact_finder_sdk import ContactFinder
 
 target_urls = ["https://rapidapi.com", "https://github.com"]
 
-# 1. Initialize with your credentials and project name
-finder = ContactFinder(api_key="YOUR_RAPIDAPI_KEY", concurrency=5, project_name="my_first_scrape")
+# Option 1: Using the Direct Website API (Default)
+finder = ContactFinder(api_key="sk_live_YOUR_WEBSITE_KEY", source="website", concurrency=5, project_name="my_first_scrape")
 
-# 2. Pass the URLs. The SDK handles everything else automatically.
+# Option 2: Using RapidAPI (Uncomment to use)
+# finder = ContactFinder(api_key="YOUR_RAPIDAPI_KEY", source="rapidapi", concurrency=5, project_name="my_first_scrape")
+
+# Pass the URLs. The SDK handles everything else automatically.
 finder.run(urls=target_urls)
 ```
 
@@ -119,7 +133,7 @@ finder_b.run(urls=["https://client-b.com"])
 
 Want to save data directly to your database as it arrives? Pass an `on_success` callback. 
 
-**Smart Routing:** If the SDK finds a URL in its local cache, it *skips the API call* (saving your RapidAPI quota) but **still instantly triggers your callback** with the cached data!
+**Smart Routing:** If the SDK finds a URL in its local cache, it *skips the API call* (saving your API credits) but **still instantly triggers your callback** with the cached data!
 
 ```python
 def save_to_my_db(data):
@@ -136,7 +150,7 @@ finder.run(
 ### 🔍 Parse Modes Explained
 * **`"contact"`**: Returns a flattened dictionary containing only core contact info (Emails, Phones, Social Media links). *Highly recommended for `on_success` callbacks.*
 * **`"full"`**: Returns a massive flattened dictionary containing Contact info + Company Profile + Visuals + Meta tags.
-* **`"raw"` (Default)**: Returns the exact, untouched JSON dictionary from the RapidAPI response.
+* **`"raw"` (Default)**: Returns the exact, untouched JSON dictionary from the API response.
 
 ---
 
@@ -148,7 +162,7 @@ However, if you are building a high-volume pipeline and only need to stream data
 
 **💡 Pro-Tip for High-Volume Pipelines:**
 1. **Speed up your local workflow:** Set `auto_store=False`. Bypassing local file generation eliminates disk I/O, significantly speeding up your Python script's execution when you only need the `on_success` callback.
-2. **Reduce payload size & save bandwidth:** Change the extraction flags (`profile`, `visuals`, `meta`) to `"false"`. This tells the API to skip heavy extraction, drastically reducing the RapidAPI response payload size and saving massive amounts of **bandwidth** when processing millions of requests. *(Note: This reduces network transfer size, but does not significantly speed up the API's internal scraping time).*
+2. **Reduce payload size & save bandwidth:** Change the extraction flags (`profile`, `visuals`, `meta`) to `"false"`. This tells the API to skip heavy extraction, drastically reducing the API response payload size and saving massive amounts of **bandwidth** when processing millions of requests. *(Note: This reduces network transfer size, but does not significantly speed up the API's internal scraping time).*
 
 ```python
 finder.run(
@@ -180,7 +194,9 @@ The Quick Start uses smart defaults that work perfectly for 95% of use cases. Bu
 | `parse_mode` | `str` | `"raw"` | How to format the callback data (`"raw"`, `"contact"`, or `"full"`). |
 | `on_success` | `Callable`| `None` | A function to execute immediately when a URL succeeds. |
 | `auto_store` | `bool` | `True` | If `True`, automatically saves outputs to local files. |
-| `**api_kwargs` | `kwargs` | `{}` | Override default RapidAPI params (e.g., `profile="false"`). |
+| `**api_kwargs` | `kwargs` | `{}` | Override default API params (e.g., `profile="false"`). |
+
+*(Note: `api_key` and `source` (choose `"website"` or `"rapidapi"`) are passed to the `ContactFinder()` constructor, not `finder.run()`).*
 
 ---
 
