@@ -1,0 +1,1037 @@
+===== contact_finder_sdk/__init__.py =====
+from contact_finder_sdk.main import ContactFinder
+
+__all__ = ["ContactFinder"]
+===== contact_finder_sdk/client.py =====
+import asyncio
+import aiohttp
+from contact_finder_sdk.config import (
+    SCRAPEEG_URL, RAPIDAPI_HOST, RAPIDAPI_DEFAULT_PARAMS,
+    MAX_RETRIES, RETRY_BACKOFF_SECONDS, REQUEST_TIMEOUT, TRANSIENT_ERROR_PHRASES
+)
+
+class APIClient:
+    def __init__(self, api_key: str, source: str = "website", max_retries: int = MAX_RETRIES, retry_backoff: int = RETRY_BACKOFF_SECONDS):
+        self.source = source.lower()
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+
+        if self.source == "website":
+            self.base_url = SCRAPEEG_URL
+            self.headers = {"X-Api-Key": api_key}
+        elif self.source == "rapidapi":
+            self.base_url = f"https://{RAPIDAPI_HOST}/"
+            self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": RAPIDAPI_HOST, "Content-Type": "application/json"}
+        else:
+            raise ValueError("source must be 'website' or 'rapidapi'")
+
+
+    @staticmethod
+    def _is_transient_error(message: str) -> bool:
+        return bool(message) and any(phrase in message.lower() for phrase in TRANSIENT_ERROR_PHRASES)
+
+    def _build_params(self, url: str, **kwargs) -> dict:
+        # Start with RapidAPI defaults, add URL, then override with user kwargs
+        params = {"url": url, **RAPIDAPI_DEFAULT_PARAMS}
+        for k, v in kwargs.items():
+            if k in RAPIDAPI_DEFAULT_PARAMS:
+                params[k] = str(v).lower()
+        return params
+
+
+    async def fetch(self, session: aiohttp.ClientSession, url: str, semaphore: asyncio.Semaphore, **kwargs) -> tuple[str, dict | None]:
+        params = self._build_params(url, **kwargs)
+        last_error = None
+
+        async with semaphore:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    async with session.get(self.base_url, headers=self.headers, params=params, timeout=REQUEST_TIMEOUT) as response:
+
+                        # 1. HANDLE WEBSITE API ERRORS (401, 403, 429, 500)
+                        if response.status >= 400:
+                            try:
+                                err_json = await response.json()
+                                last_error = err_json.get("detail", f"HTTP {response.status}")
+                            except Exception:
+                                last_error = f"HTTP {response.status}: {await response.text()}"
+
+                            # Stop immediately on Auth or Credit errors
+                            if response.status in (401, 403):
+                                return url, {"error": last_error}
+
+                            # Retry on Rate Limits or Server Errors
+                            if attempt < self.max_retries:
+                                await asyncio.sleep(self.retry_backoff * attempt)
+                                continue
+                            return url, {"error": last_error}
+
+                        # 2. HANDLE ENGINE JSON (HTTP 200 OK)
+                        result = await response.json(content_type=None)
+                        api_error = (result or {}).get("error")
+
+                        # Retry if the engine itself returned a transient error
+                        if api_error and self._is_transient_error(api_error) and attempt < self.max_retries:
+                            await asyncio.sleep(self.retry_backoff * attempt)
+                            last_error = api_error
+                            continue
+
+                        return url, result
+
+                except (aiohttp.ClientResponseError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    # 3. HANDLE NETWORK ERRORS (DNS, Connection Refused, Timeout)
+                    last_error = str(err)
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(self.retry_backoff * attempt)
+                        continue
+                    return url, {"error": last_error}
+
+        return url, {"error": last_error or "request failed after retries"}
+===== contact_finder_sdk/config.py =====
+import os
+import aiohttp
+
+
+# ── Website API Settings ─────────────────────────────────────────────────────────────
+SCRAPEEG_URL = "https://scrapeeg.org/v1/contact/search"
+# base_url = "http://132.0.0.1:8000/scrape"        # this for local fastapi
+headers  = {}
+
+# ── RapidAPI SDK Settings (For your users) ──────────────────────────────────
+RAPIDAPI_HOST = "website-contact-finder.p.rapidapi.com"
+RAPIDAPI_URL = f"https://{RAPIDAPI_HOST}/"
+
+# RapidAPI expects string "false"/"false" for these params -- currently not being used
+RAPIDAPI_DEFAULT_PARAMS = {
+    "contact": "true",
+    "sources": "true",
+    "profile": "true",
+    "visuals": "true",
+    "meta": "true"
+}
+
+
+# currently not being used
+REQUESTER = "rnet"
+FULL = True
+INCLUDE_CONTACT = False
+INCLUDE_SOURCES = False
+INCLUDE_PROFILE = False
+INCLUDE_VISUALS = False
+INCLUDE_META = False
+
+# ── Concurrency & Retry Settings ─────────────────────────────────────────────
+CONCURRENCY = 30
+MAX_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 2
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+TRANSIENT_ERROR_PHRASES = ["timeout", "rate limit", "too many requests", "service unavailable", "502", "503", "504"]
+
+
+
+# --- DYNAMIC PATHS (The Class) ---
+class Config:
+    def __init__(self):
+        # self.BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.BASE_DIR = os.getcwd()
+        self.PROJECT_NAME = "default_project"
+        self._update_paths()
+        # self.PROJECT_NAME = None
+
+
+    def _update_paths(self):
+        self.DATA_DIR = os.path.join(self.BASE_DIR, "data", self.PROJECT_NAME)
+        # os.makedirs(self.DATA_DIR, exist_ok=True)
+        self.FULL_JSONL_PATH = os.path.join(self.DATA_DIR, "full.jsonl")
+        self.RAW_JSONL_PATH = os.path.join(self.DATA_DIR, "raw.jsonl")
+        self.FULL_CSV_PATH = os.path.join(self.DATA_DIR, "full.csv")
+        self.CONTACT_CSV_PATH = os.path.join(self.DATA_DIR, "contact.csv")
+        self.FAILED_LOG_PATH = os.path.join(self.DATA_DIR, "failed.log")
+
+        # Input file config (MOVED HERE so it updates when project changes)
+        self.URLS_DIR = os.path.join(self.BASE_DIR, "urls", self.PROJECT_NAME)
+        # os.makedirs(self.URLS_DIR, exist_ok=True)
+        self.URLS_FILE_PATH = os.path.join(self.URLS_DIR, "website_contact_finder_with_emails.csv")
+        self.URL_FIELD_NAME = "url"
+        self.DEDUP_KEY = "url"
+
+    def set_project(self, name: str):
+        name = name or "default_project"
+        if self.PROJECT_NAME != name:  # Only update if it's actually a new project
+            self.PROJECT_NAME = name
+            self._update_paths()
+
+
+# Instantiate it so other files can import it
+config = Config()
+===== contact_finder_sdk/main.py =====
+import time
+import asyncio
+import aiohttp
+from tqdm.asyncio import tqdm
+from contact_finder_sdk.config import Config, CONCURRENCY, REQUEST_TIMEOUT
+from contact_finder_sdk.utils import URLManager
+from contact_finder_sdk.parsers import ResponseParser
+from contact_finder_sdk.storage import StorageManager
+from contact_finder_sdk.client import APIClient
+
+class ContactFinder:
+    # def __init__(self, api_key: str, host: str = "website-contact-finder.p.rapidapi.com", concurrency: int = 25, project_name: str = "default_project", use_vps: bool = False):
+    def __init__(self, api_key: str, source: str = "website", concurrency: int = 25, project_name: str = "default_project"):
+        # 1. Create an isolated config for this instance
+        self.local_config = Config()
+        self.local_config.set_project(project_name)
+        self.url_manager = URLManager(project_config=self.local_config)
+
+        # 2. Initialize StorageManager AFTER config is updated so it grabs the new paths
+        self.storage = StorageManager(dedup_key="url", auto_store=True, project_config=self.local_config)
+        self.client = APIClient(api_key=api_key, source=source)
+        self.concurrency = concurrency
+        self.dedup_key = "url"
+        self.parser = ResponseParser()
+
+    # Added a synchronous wrapper so users don't have to use asyncio
+    def run(self, urls: list[str] = None, file_path: str = None, url_field_name: str = "url", dedup_key: str = "url", on_success=None, parse_mode: str = "raw", auto_store: bool = True, project_name: str = None, **api_kwargs):
+        """Synchronous entry point for the SDK."""
+        # Apply per-run file configurations
+        self.url_manager.field_name = url_field_name.lower()
+        self.storage.dedup_key = dedup_key.lower()
+        self.dedup_key = dedup_key.lower()
+
+        # If user passes a new project name at runtime, update config and rebuild storage
+        if project_name:
+            self.local_config.set_project(project_name)
+            self.url_manager.config = self.local_config
+            self.storage = StorageManager(dedup_key=dedup_key.lower(), auto_store=auto_store, project_config=self.local_config)
+
+        self.on_success = on_success
+        self.parse_mode = parse_mode
+        self.auto_store = auto_store.lower() == "true" if isinstance(auto_store, str) else bool(auto_store)
+        self.storage.auto_store = self.auto_store
+
+        asyncio.run(self.run_async(urls, file_path, **api_kwargs))
+
+    async def run_async(self, urls: list[str] = None, file_path: str = None, **api_kwargs):
+        urls = urls or self.url_manager.load_urls(file_path)
+        urls = URLManager.remove_duplicates(urls)     # remove urls duplicates
+
+        print('Total websites to process: ', len(urls))
+        print(f"Scraping: {len(urls)} URLs")
+
+        if self.auto_store:
+            self.url_manager.ensure_data_dir()
+
+        # Always generate fields for both full and contact CSVs for storage
+        full_csv_fields = self.parser.build_csv_fields()
+        contact_csv_fields = list(self.parser.parse_contact({}).keys())
+
+        seen, full_writer, contact_writer = self.storage.build_seen_and_sync_files(full_csv_fields=full_csv_fields, contact_csv_fields=contact_csv_fields)
+        success_count = skip_count = fail_count = cached_count = 0
+
+        # 1. Load cache from disk (fallback to full.jsonl if raw is missing)
+        is_fallback = False
+        cache = {}
+
+        records = self.storage.read_jsonl(self.storage.raw_jsonl_path)
+        if not records and self.parse_mode in ("full", "contact"):
+            is_fallback = True
+            print("⚠️ raw.jsonl missing. Falling back to full.jsonl.")
+            records = self.storage.read_jsonl(self.storage.jsonl_path)
+
+        for record in records:
+            if raw_url := (record.get("data") or {}).get("url") or record.get("url"):
+                cache[self.url_manager.normalize_url(raw_url)] = record
+
+        # 2. Partition URLs and trigger callbacks
+        pending_urls, cached_count, skip_count = [], 0, 0
+        for target_url in urls:
+            normalized_url = self.url_manager.normalize_url(target_url)
+            if normalized_url in cache:
+                if self.on_success:
+                    if is_fallback:
+                        row = cache[normalized_url] if self.parse_mode == "full" else {k: v for k, v in cache[normalized_url].items() if k in contact_csv_fields}
+                    else:
+                        row = self.parser.parse(cache[normalized_url], self.parse_mode)
+                    self.on_success(row)
+                cached_count += 1
+            elif normalized_url in seen and self.parse_mode != "raw":
+                skip_count += 1
+            else:
+                pending_urls.append(target_url)
+
+        if not pending_urls:
+            print(f"Nothing new to scrape. {cached_count} cached, {skip_count} already seen.")
+            return
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
+            # Pass api_kwargs (like profile="false") down to the client
+            tasks = [asyncio.ensure_future(self.client.fetch(session, url, semaphore, **api_kwargs)) for url in pending_urls]
+
+            # Kept your exact tqdm setup and commented out pbar lines
+            with tqdm(total=len(urls), initial=cached_count + skip_count, desc=f"{'Scraping':<32}", unit="URL", dynamic_ncols=True, colour="green", miniters=1,) as pbar:
+                for coro in asyncio.as_completed(tasks):
+                    url, json_data = await coro
+                    api_error = ((json_data or {}).get("data") or json_data or {}).get("error")
+
+                    if json_data and not api_error:
+                        # 1. ALWAYS parse as "full" for SDK storage (Master Record)
+                        full_row = self.parser.parse(json_data, parse_mode="full")
+                        if not self.parser.has_contact_data(full_row):
+                            fail_count += 1
+                            self.storage.log_failed_url(url, "No contact info found")
+                            pbar.set_description(f"⚠ EMPTY {(d:=full_row.get('domain') or url)[:20]+(' .. ' if len(d)>20 else ''):<24}")
+                            pbar.set_postfix(saved=success_count, cached=cached_count, skipped=skip_count, failed=fail_count, refresh=False)
+                            pbar.update(1)
+                            continue
+
+                        # 2. INSTANTLY call the user's function with THEIR requested parse_mode
+                        if self.on_success:
+                            callback_row = self.parser.parse(json_data, parse_mode=self.parse_mode)
+                            self.on_success(callback_row)
+
+                        normalized_value = self.url_manager.normalize_url(full_row.get(self.dedup_key))
+
+                        if normalized_value and normalized_value in seen:
+                            # Already in master files. We will restore raw.jsonl below, but skip master files to prevent duplicates.
+                            success_count += 1
+                            pbar.set_description(f"⟳ {(d:=full_row.get('domain') or url)[:20]+(' .. ' if len(d)>20 else ''):<24}")
+                        else:
+                            self.storage.append_to_jsonl(full_row)                                          # 2. Save to master full JSONL
+                            full_writer.writerow(full_row)                                                  # 3. Save to full CSV
+                            contact_row = {k: v for k, v in full_row.items() if k in contact_csv_fields}    # 4. Filter and save to contact CSV
+                            contact_writer.writerow(contact_row)
+
+                            if normalized_value:
+                                seen.add(normalized_value)
+                            success_count += 1
+                            pbar.set_description(f"✔ {(d:=full_row.get('domain') or url)[:20]+(' .. ' if len(d)>20 else ''):<24}")
+
+                        # ALWAYS save raw API response to raw.jsonl (restores cache if missing, without duplicating master files)
+                        self.storage.append_to_jsonl(json_data, file_path=self.storage.raw_jsonl_path)
+                    else:
+                        fail_count += 1
+                        self.storage.log_failed_url(url, api_error or "request failed")
+                        pbar.set_description(f"✖ {url[:20]+(' .. ' if len(url)>20 else ''):<24}")
+
+                    pbar.set_postfix(saved=success_count, cached=cached_count, skipped=skip_count, failed=fail_count, refresh=False)
+                    pbar.update(1)
+
+        print(f"Done. saved={success_count} | cached={cached_count} | skipped={skip_count} | failed={fail_count}")
+        if self.auto_store:
+            print(f"Files: {self.storage.jsonl_path}, {self.storage.raw_jsonl_path}, {self.storage.full_csv_path}, {self.storage.contact_csv_path}")
+            if fail_count: print(f"Failed log: {self.storage.failed_log_path}")
+===== contact_finder_sdk/parsers.py =====
+
+class ResponseParser:
+    """Flattens the API's nested JSON into one row for the CSV."""
+
+    CORE_KEYS = ["domain", "url", "response_url", "status_code", "scraped_at", "scrape_time", "emails_num", "phones_num", "social_num"]
+    SOCIAL_KEYS = ["facebook", "instagram", "twitter", "linkedin", "youtube", "tiktok", "pinterest", "threads", "whatsapp", "telegram", "github", "reddit"]
+
+    # Kept your exact _ACTIVE_PARSERS list as a class attribute
+    _ACTIVE_PARSERS = []
+    def __init__(self):
+        self._ACTIVE_PARSERS = [self.parse_contact,  self.parse_profile,  self.parse_visuals,  self.parse_meta]
+
+    def parse_contact(self, data: dict) -> dict:
+        data = (data or {}).get("data", data) or {}
+        contact = data.get("contact", {}) or {}
+        social = contact.get("social", {}) or {}
+        return {
+            **{k: data.get(k) for k in self.CORE_KEYS},
+            "emails": ", ".join(contact.get("emails") or []),
+            "phones": ", ".join(contact.get("phones") or []),
+            "original_phones": ", ".join(contact.get("original_phones") or []),
+            **{k: social.get(k) for k in self.SOCIAL_KEYS},
+            "social_all": ", ".join(contact.get("social_list") or []),
+        }
+
+    def parse_profile(self, data: dict) -> dict:
+        profile  = data.get("profile", {}) or {}
+        dates    = profile.get("dates", {}) or {}
+        coords   = profile.get("coordinates", {}) or {}
+        ratings  = profile.get("ratings", {}) or {}
+        address  = next(iter(profile.get("addresses") or []), {}) or {}
+        profile_keys = ["title", "site_name", "description", "language", "platform", "favicon", "h1", "h2", "h3"]
+        address_keys = ["street", "city", "region", "postal_code", "country", "full"]
+        return {
+            **{k: profile.get(k) for k in profile_keys},
+            "categories":          ", ".join(profile.get("categories") or []),
+            "keywords":            ", ".join(profile.get("keywords") or []),
+            "tags":                ", ".join(profile.get("tags") or []),
+            **{f"address_{k}": address.get(k) for k in address_keys},
+            "hours":               ", ".join(profile.get("hours") or []),
+            "lat":                 coords.get("lat"),
+            "lng":                 coords.get("lng"),
+            "rating_value":        ratings.get("value"),
+            "rating_count":        ratings.get("count"),
+            "date_published":      dates.get("published"),
+            "date_modified":       dates.get("modified"),
+        }
+
+    def parse_visuals(self, data: dict) -> dict:
+        visuals = data.get("visuals", {}) or {}
+        images_with_alt = visuals.get("images_with_alt") or []
+        return {
+            "logos":               ", ".join(visuals.get("logos") or []),
+            "additional_logos":    ", ".join(visuals.get("additional_logos") or []),
+            "og_image":            visuals.get("og_image"),
+            "twitter_image":       visuals.get("twitter_image"),
+            "images_with_alt_src": ", ".join(i.get("src", "") for i in images_with_alt if i.get("src")),
+            "images_without_alt":  ", ".join(visuals.get("images_without_alt") or []),
+        }
+
+    def parse_meta(self, data: dict) -> dict:
+        meta = data.get("meta", {}) or {}
+        keys = ["has_privacy_policy", "has_terms", "has_blog", "has_careers", "has_pricing"]
+        return {k: meta.get(k) for k in keys}
+
+    def parse(self, json_data: dict, parse_mode: str = "raw") -> dict:
+        data = json_data.get("data", json_data) if json_data else {}
+        if parse_mode == "raw":
+            return json_data
+        if parse_mode == "contact":
+            return self.parse_contact(data)
+        if parse_mode == "full":
+            return {k: v for parser in self._ACTIVE_PARSERS for k, v in parser(data).items()}
+
+        raise ValueError(f"Invalid parse_mode: '{parse_mode}'. Choose from 'raw', 'contact', or 'full'.")
+
+    def has_contact_data(self, row: dict) -> bool:
+        """Returns True if the parsed row contains any meaningful contact info."""
+        emails_num = int(row.get("emails_num") or 0)
+        phones_num = int(row.get("phones_num") or 0)
+
+        return bool(row.get("emails") or row.get("phones") or row.get("social_all") or emails_num > 0 or phones_num > 0)
+
+    def build_csv_fields(self) -> list[str]:
+        return list(dict.fromkeys(
+            key for parser in self._ACTIVE_PARSERS for key in parser({})
+        ))
+===== contact_finder_sdk/storage.py =====
+import os
+import csv
+import json
+import tempfile
+import time
+from contact_finder_sdk.config import config
+from contact_finder_sdk.parsers import ResponseParser
+from contact_finder_sdk.utils import URLManager
+
+url_mgr = URLManager()
+
+class DummyCSVWriter:
+    """No-op writer used when auto_store=False."""
+    def writerow(self, row: dict) -> None:
+        pass
+
+# ── CSV helpers ───────────────────────────────────────────────────────────────
+class CSVWriter:
+    def __init__(self, path: str, csv_fields: list[str] = None):
+        self.path = path
+        self.csv_fields = csv_fields or []
+        self.header = self._load_or_init_header()
+
+    def _load_or_init_header(self) -> list[str]:
+        if not os.path.isfile(self.path):
+            self._write_fresh_header(); return list(self.csv_fields)
+        with open(self.path, newline="", encoding="utf-8") as f:
+            header = list(next(csv.reader(f), None) or [])
+        new_fields = [k for k in self.csv_fields if k not in header]
+        if new_fields: header.extend(new_fields); self._atomic_rewrite(header)
+        return header
+
+    def _write_fresh_header(self) -> None:
+        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+        with open(self.path, mode="w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(self.csv_fields)
+
+    def _atomic_rewrite(self, header: list[str]) -> None:
+        rows = []
+        if os.path.isfile(self.path):
+            with open(self.path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+        dir_name = os.path.dirname(self.path) or "."
+        with tempfile.NamedTemporaryFile(mode="w", newline="", encoding="utf-8", dir=dir_name, delete=False, suffix=".tmp") as tmp:
+            tmp_path = tmp.name
+            writer = csv.DictWriter(tmp, fieldnames=header, extrasaction="ignore")
+            writer.writeheader(); writer.writerows(rows)
+        os.replace(tmp_path, self.path)
+
+    def writerow(self, row: dict) -> None:
+        new_fields = [k for k in row if k not in self.header]
+        if new_fields:
+            self.header.extend(new_fields); self._atomic_rewrite(self.header)
+        with open(self.path, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=self.header, extrasaction="ignore", restval="")
+            writer.writerow(row); f.flush()
+
+# ── Storage Manager Class ─────────────────────────────────────────────────────
+class StorageManager:
+    def __init__(self, dedup_key: str = "url", auto_store=True, project_config=None):
+        self.auto_store = auto_store
+        self.dedup_key = dedup_key.lower()
+
+        cfg = project_config if project_config is not None else config
+
+        # Dynamically fetch the LIVE paths from the config object
+        self.jsonl_path = cfg.FULL_JSONL_PATH
+        self.raw_jsonl_path = cfg.RAW_JSONL_PATH
+        self.full_csv_path = cfg.FULL_CSV_PATH
+        self.contact_csv_path = cfg.CONTACT_CSV_PATH
+        self.failed_log_path = cfg.FAILED_LOG_PATH
+
+
+    def read_jsonl(self, file_path: str = None) -> list[dict]:
+        """Reads a JSONL file. Defaults to main JSONL, but accepts a custom path (like raw_jsonl_path)."""
+        path = file_path or self.jsonl_path
+        if not self.auto_store: return []
+        if not os.path.isfile(path): return []
+        records: list[dict] = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                stripped_line: str = line.strip()
+                if not stripped_line: continue
+                try: records.append(json.loads(stripped_line))
+                except json.JSONDecodeError: continue
+        return records
+
+    def append_to_jsonl(self, record: dict, file_path: str = None) -> None:
+        """Append one record as a JSON line. Defaults to main JSONL, but accepts a custom path."""
+        path = file_path or self.jsonl_path
+        if not self.auto_store: return
+        with open(path, mode="a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n"); f.flush()
+
+    def log_failed_url(self, url: str, reason: str) -> None:
+        if not self.auto_store: return
+        with open(self.failed_log_path, mode="a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{url}\t{reason}\n"); f.flush()
+
+    # ── Startup: mutual rebuild between JSONL and CSV ─────────────────────────────
+    def build_seen_and_sync_files(self, full_csv_fields: list[str], contact_csv_fields: list[str]) -> tuple[set, CSVWriter, CSVWriter]:
+        if not self.auto_store:
+            return set(), DummyCSVWriter(), DummyCSVWriter()
+        jsonl_exists = os.path.isfile(self.jsonl_path)
+        full_csv_exists = os.path.isfile(self.full_csv_path)
+        contact_csv_exists = os.path.isfile(self.contact_csv_path)
+        seen = set()
+
+        full_writer = CSVWriter(path=self.full_csv_path, csv_fields=full_csv_fields)
+        contact_writer = CSVWriter(path=self.contact_csv_path, csv_fields=contact_csv_fields)
+
+        # ── Case 1: Master JSONL exists (Nuke and Rebuild CSVs for perfect sync) ──
+        if jsonl_exists:
+            records = list({url_mgr.normalize_url(r.get(self.dedup_key, "")): r for r in self.read_jsonl() if r.get(self.dedup_key) and not r.get("error")}.values())
+            seen = {url_mgr.normalize_url(record[self.dedup_key]) for record in records}
+
+            # Delete existing CSVs to guarantee 100% sync
+            if full_csv_exists: os.remove(self.full_csv_path)
+            if contact_csv_exists: os.remove(self.contact_csv_path)
+
+            # Re-initialize writers with fresh, empty files
+            full_writer = CSVWriter(path=self.full_csv_path, csv_fields=full_csv_fields)
+            contact_writer = CSVWriter(path=self.contact_csv_path, csv_fields=contact_csv_fields)
+
+            if records:
+                print(f"Regenerating CSVs from master JSONL ({len(records)} records)...")
+                for record in records:
+                    full_writer.writerow(record)
+                    contact_row = {k: v for k, v in record.items() if k in contact_csv_fields}
+                    contact_writer.writerow(contact_row)
+                print("CSVs ready.")
+
+            return seen, full_writer, contact_writer
+
+
+        # ── Case 2: JSONL missing, but full.csv exists → rebuild JSONL from full.csv ───────────
+        if full_csv_exists:
+            print("Master JSONL missing — rebuilding from full.csv...")
+            with open(self.full_csv_path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            for row in rows:
+                clean_row = {k: v for k, v in row.items() if v != ""}
+                self.append_to_jsonl(clean_row)
+            print(f"JSONL rebuilt ({len(rows)} records).")
+            seen = {url_mgr.normalize_url(value) for record in self.read_jsonl() if (value := record.get(self.dedup_key))}
+
+            # Re-initialize writers to write the contact.csv from the rebuilt JSONL
+            full_writer = CSVWriter(path=self.full_csv_path, csv_fields=full_csv_fields)
+            contact_writer = CSVWriter(path=self.contact_csv_path, csv_fields=contact_csv_fields)
+
+            if not contact_csv_exists:
+                print("Generating contact.csv from rebuilt JSONL...")
+                for record in self.read_jsonl():
+                    contact_row = {k: v for k, v in record.items() if k in contact_csv_fields}
+                    contact_writer.writerow(contact_row)
+
+            return seen, full_writer, contact_writer
+
+         # ── Case 3: All files missing — fresh start ──────────────────────────────
+        return seen, full_writer, contact_writer
+===== contact_finder_sdk/utils.py =====
+import os
+import csv
+from contact_finder_sdk.config import config
+
+class URLManager:
+    def __init__(self, urls_file_path: str = None, field_name: str = "url", project_config=None):
+        self.config = project_config if project_config is not None else config
+        self.urls_file_path = urls_file_path
+        self.field_name = field_name.lower()
+
+    def normalize_url(self, url: str) -> str:
+        if not url: return ""
+        url = url.strip().lower().split("://", 1)[-1].rstrip("/")
+        return url[4:] if url.startswith("www.") else url
+
+    def load_urls(self, path: str = None) -> list[str]:
+        path = path or self.urls_file_path or self.config.URLS_FILE_PATH
+        if not path: return []
+
+        # CRITICAL FIX: Resolve to absolute path to prevent working directory bugs
+        abs_path = os.path.abspath(path)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"SDK cannot find file: {abs_path}")
+        path = abs_path
+
+        # Fix 1: Use 'with' for .txt files
+        if path.endswith(".txt"):
+            with open(path, encoding="utf-8") as f:
+                return [l.strip() for l in f if l.strip()]
+
+        # Fix 2: Use 'with' for .csv files (utf-8-sig handles Excel BOM)
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+
+        if not rows: return []
+
+        header = [h.strip().lower() for h in rows[0]]
+        field = self.field_name
+        col = header.index(field) if field in header else 0
+        body = rows[1:] if field in header else rows
+        return [r[col].strip() for r in body if len(r) > col and r[col].strip()]
+
+    def ensure_data_dir(self) -> None:
+        os.makedirs(self.config.DATA_DIR, exist_ok=True)
+        # os.makedirs(self.config.URLS_DIR, exist_ok=True)
+
+    @staticmethod
+    def remove_duplicates(items: list[str]) -> list[str]:
+        """Removes exact duplicate strings while preserving original order."""
+        return list(dict.fromkeys(i for i in items if i))
+===== pyproject.toml =====
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# PyPI REQUIRES hyphens here, not underscores!
+name = "contact-finder-sdk"
+version = "1.1.0"
+description = "A robust, high-concurrency async SDK for the Website Contact Finder API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Mohamed Kalmoush", email = "mohamedkalmoush1234@gmail.com"},
+]
+keywords = ["rapidapi", "scraper", "contacts", "emails", "lead-generation", "sdk", "async"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "aiohttp>=3.14.3",
+    "tqdm>=4.70.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/mohamedkalmoush/contact-finder-sdk"
+"Bug Tracker" = "https://github.com/mohamedkalmoush/contact-finder-sdk/issues"
+
+[tool.setuptools.packages.find]
+include = ["contact_finder_sdk*"]
+===== README.md =====
+# 🕵️ Contact Finder SDK
+
+[![PyPI version](https://img.shields.io/badge/pypi-v1.1.0-blue.svg)](https://pypi.org/project/contact-finder-sdk/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A robust, high-concurrency async Python SDK for the **Website Contact Finder API**. Effortlessly scrape emails, phone numbers, social media links, and rich company metadata from thousands of websites.
+
+## ✨ Key Features
+
+* 🚀 **Async & High Concurrency:** Processes hundreds of URLs simultaneously using `asyncio` and `aiohttp`.
+* 🛡️ **Crash-Proof Resumability:** Caches raw API responses locally. If your script crashes, it resumes exactly where it left off without wasting your API credits.
+* 🔄 **Self-Healing Storage:** Automatically detects missing files and rebuilds them. If you delete a CSV, it rebuilds it from the JSONL. If you delete the JSONL, it rebuilds it from the CSV.
+* 📊 **Dynamic CSV Headers:** Uses atomic file rewrites to dynamically add new columns if the API returns unexpected fields, without corrupting existing data.
+* 🗂️ **Multi-Project Isolation:** Run multiple scrapers at once. Each `project_name` gets its own isolated data folder.
+* 🧠 **Smart Callback Routing:** Triggers your `on_success` callbacks instantly for cached URLs without making redundant API calls.
+
+---
+
+## 📦 Installation
+
+```bash
+pip install contact-finder-sdk
+```
+
+## 🔑 Prerequisites & API Key Setup
+
+You can use this SDK with our **Direct Website API** (recommended) or via **RapidAPI**. 
+
+### Option 1: Direct Website API (Fastest)
+Skip the RapidAPI dashboard entirely. You can get a key directly from our website.
+1. Visit **[scrapeeg.org/signup](https://scrapeeg.org/signup)** to create a free account.
+2. You get **250 free credits** instantly (no credit card required).
+3. Go to your Dashboard, click **"Create API key"**, and copy the key.
+
+---
+
+### Option 2: RapidAPI
+This SDK also connects to the [**Website Contact Finder**](https://rapidapi.com/scrapeeg/api/website-contact-finder) API hosted on RapidAPI.
+
+**1. Subscribe to the Free Plan**
+Visit our [RapidAPI Pricing Page](https://rapidapi.com/scrapeeg/api/website-contact-finder/pricing).
+* Click **"Subscribe"** or **"Start Free Plan"**.
+* Log in to RapidAPI (using "Continue with Google" is the fastest).
+* Select the **Free Plan** (usually the first one on the left) and click **"Subscribe"** in the top right corner. *(No credit card required!)*
+
+**2. Copy Your API Key**
+Once subscribed, go to the **Endpoints** tab on the API dashboard. Click on any endpoint, and look at the code snippet on the right side of the screen. Copy the long string value for `x-rapidapi-key`.
+
+> 💡 **Need help?** If you get stuck or have questions about the API, message me directly on [WhatsApp](https://api.whatsapp.com/send?phone=201141843921) or [Telegram](https://t.me/MohamedKalmoush) and I'll walk you through it personally!
+
+---
+
+## 🚀 Quick Start (Zero Configuration Required)
+
+We designed this SDK to get out of your way. You don't need to write loops, handle callbacks, or manually parse and save files. 
+
+Just pass your URLs, and the SDK automatically scrapes, extracts emails/phones/socials, and drops perfectly formatted files into a folder named after your project.
+
+```python
+from contact_finder_sdk import ContactFinder
+
+target_urls = ["https://rapidapi.com", "https://github.com"]
+
+# Option 1: Using the Direct Website API (Default)
+finder = ContactFinder(api_key="sk_live_YOUR_WEBSITE_KEY", source="website", concurrency=5, project_name="my_first_scrape")
+
+# Option 2: Using RapidAPI (Uncomment to use)
+# finder = ContactFinder(api_key="YOUR_RAPIDAPI_KEY", source="rapidapi", concurrency=5, project_name="my_first_scrape")
+
+# Pass the URLs. The SDK handles everything else automatically.
+finder.run(urls=target_urls)
+```
+
+---
+
+## 📁 Understanding Your Output Files
+
+As soon as the Quick Start finishes, you will notice a new folder in your directory: `./data/my_first_scrape/`. 
+
+Because `auto_store=True` by default, the SDK automatically generates the following beautifully structured files:
+
+| File | Description |
+| :--- | :--- |
+| `full.jsonl` | **The Master Database.** Contains all parsed, flattened records. |
+| `raw.jsonl` | **The Cache.** Raw API responses used to prevent re-scraping. |
+| `full.csv` | A spreadsheet version of the master database. |
+| `contact.csv`| A lightweight spreadsheet with only core contact info (Emails, Phones, Socials). |
+| `failed.log` | A log of URLs that failed to scrape, with error reasons and timestamps. |
+
+### 🛡️ Data Safety & Resumability
+You don't need to worry about data corruption or crashing scripts:
+1. **Auto-Rebuilding:** If you accidentally delete `full.csv`, the SDK detects it on the next run and automatically rebuilds it from `full.jsonl`. If you delete the JSONL, it rebuilds it from the CSV.
+2. **Dynamic Headers:** If the API returns a brand new field that wasn't in your original CSV header, the SDK uses atomic file rewrites to dynamically add the new column without corrupting your existing rows.
+3. **Resumability:** If your script crashes halfway through, simply run it again. It reads `raw.jsonl`, skips the URLs it already finished, and picks up exactly where it left off.
+
+---
+
+## 📂 Reading from a CSV or TXT File
+
+If you have a massive list of URLs, you don't need to load them into a Python list first. Just pass a `.csv` or `.txt` file. The SDK will automatically read the file, extract the URLs, and process them.
+
+```python
+finder.run(
+    file_path="my_urls.csv",    # Path to your CSV or TXT file
+    url_field_name="url",       # The name of the column containing the URLs
+)
+```
+
+---
+
+## 🗂️ Multi-Project Isolation
+
+One of the most powerful features is **Project Isolation**. If you are managing multiple clients or campaigns, simply assign a different `project_name` to each instance. 
+
+The SDK will automatically create separate, isolated folders for each project inside a local `./data/` directory. Their caches, CSVs, and logs will never mix.
+
+```python
+# Instance 1: Client A
+finder_a = ContactFinder(api_key="YOUR_KEY", project_name="client_A")
+finder_a.run(urls=["https://client-a.com"])
+# Automatically saves to: ./data/client_A/
+
+# Instance 2: Client B
+finder_b = ContactFinder(api_key="YOUR_KEY", project_name="client_B")
+finder_b.run(urls=["https://client-b.com"])
+# Automatically saves to: ./data/client_B/
+```
+
+---
+
+## 🪝 Real-time Callbacks & Data Parsing
+
+Want to save data directly to your database as it arrives? Pass an `on_success` callback. 
+
+**Smart Routing:** If the SDK finds a URL in its local cache, it *skips the API call* (saving your API credits) but **still instantly triggers your callback** with the cached data!
+
+```python
+def save_to_my_db(data):
+    print(f"✅ Scraped {data.get('domain')}")
+    print(f"📧 Emails: {data.get('emails')}")
+
+finder.run(
+    urls=["https://rapidapi.com"],
+    parse_mode="contact",       # Controls what data is passed to your callback
+    on_success=save_to_my_db    # Triggered for BOTH new and cached URLs
+)
+```
+
+### 🔍 Parse Modes Explained
+* **`"contact"`**: Returns a flattened dictionary containing only core contact info (Emails, Phones, Social Media links). *Highly recommended for `on_success` callbacks.*
+* **`"full"`**: Returns a massive flattened dictionary containing Contact info + Company Profile + Visuals + Meta tags.
+* **`"raw"` (Default)**: Returns the exact, untouched JSON dictionary from the API response.
+
+---
+
+## ⚡ Advanced: Streaming Data & Payload Optimization
+
+By default, `auto_store=True` and all API extraction flags (`profile`, `visuals`, `meta`) are set to `"true"`. This fetches *everything* and safely writes it to local CSV/JSONL files, which is the recommended approach for most users.
+
+However, if you are building a high-volume pipeline and only need to stream data directly into your database via `on_success`, you can optimize your workflow in two ways:
+
+**💡 Pro-Tip for High-Volume Pipelines:**
+1. **Speed up your local workflow:** Set `auto_store=False`. Bypassing local file generation eliminates disk I/O, significantly speeding up your Python script's execution when you only need the `on_success` callback.
+2. **Reduce payload size & save bandwidth:** Change the extraction flags (`profile`, `visuals`, `meta`) to `"false"`. This tells the API to skip heavy extraction, drastically reducing the API response payload size and saving massive amounts of **bandwidth** when processing millions of requests. *(Note: This reduces network transfer size, but does not significantly speed up the API's internal scraping time).*
+
+```python
+finder.run(
+    urls=target_urls,
+    on_success=save_to_my_db,   # Process data in real-time
+    auto_store=True,            # Default: True. Set to False to skip disk I/O and speed up execution.
+    parse_mode="contact",       # Default: "raw". Use "contact" for emails/phones.
+    
+    # API Overrides (Defaults are all "true" to fetch complete data for auto_store)
+    # Change these to "false" to reduce response payload size and save bandwidth:
+    profile="true",             # Default: "true". Set to "false" to skip company profile extraction.
+    visuals="true",             # Default: "true". Set to "false" to skip image/logo extraction.
+    meta="true"                 # Default: "true". Set to "false" to skip meta tag extraction.
+)
+```
+
+---
+
+## ⚙️ Complete Configuration Reference
+
+The Quick Start uses smart defaults that work perfectly for 95% of use cases. But if you want granular control, `finder.run()` accepts the following parameters:
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `urls` | `list[str]` | `None` | A direct list of URLs to scrape. |
+| `file_path` | `str` | `None` | Path to a `.csv` or `.txt` file containing URLs. |
+| `url_field_name`| `str` | `"url"` | The column name to look for if using a CSV file. |
+| `dedup_key` | `str` | `"url"` | The key used to check for duplicates. |
+| `parse_mode` | `str` | `"raw"` | How to format the callback data (`"raw"`, `"contact"`, or `"full"`). |
+| `on_success` | `Callable`| `None` | A function to execute immediately when a URL succeeds. |
+| `auto_store` | `bool` | `True` | If `True`, automatically saves outputs to local files. |
+| `**api_kwargs` | `kwargs` | `{}` | Override default API params (e.g., `profile="false"`). |
+
+*(Note: `api_key` and `source` (choose `"website"` or `"rapidapi"`) are passed to the `ContactFinder()` constructor, not `finder.run()`).*
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+===== examples/basic_usage1.py =====
+import csv
+import time
+import json
+from contact_finder_sdk import ContactFinder
+
+
+# 1. Define the callback function FIRST
+def save_to_database(data):
+    print("\n" + "="*50)
+    print("✅ LIVE SUCCESS - FULL RESPONSE DATA:")
+    print(json.dumps(data, indent=2))
+    print("="*50 + "\n")
+
+def read_csv(csv_path):
+    with open(csv_path, mode="r", encoding="utf-8") as f:
+        test_urls = [row["url"] for row in csv.DictReader(f) if row.get("url") and row["url"].strip()]
+    return test_urls
+
+if __name__ == "__main__":
+    start = time.time()
+
+    # Initialize the SDK
+    finder = ContactFinder(api_key="your_rapidapi_key_here", concurrency=5, project_name="googlemaps")
+
+    # define a url list manually
+    # test_urls = ["https://www.mankindbarbersnyc.com", "https://rapidapi.com", "https://blueprintroofing.com"]
+
+    # or read it from a file
+    csv_path = "googlemaps_urls.csv"
+    test_urls = read_csv(csv_path)
+    test_urls = test_urls[:10]
+
+
+    # 4. Run the scraper showing ALL possible parameters
+    finder.run(
+        # --- INPUT METHODS (Choose one) ---
+        # urls=test_urls,                      # <-- ALTERNATIVE: Pass a list of URLs directly
+        file_path=csv_path,                    # <-- ACTIVE: SDK reads this file directly
+
+        # --- FILE SCHEMA (Only used if file_path is provided) ---
+        url_field_name="url",                  # <-- ACTIVE: Looks for this column name in the CSV
+        dedup_key="url",                       # <-- ACTIVE: Uses this key for deduplication
+
+        # --- CORE BEHAVIOR ---
+        parse_mode="raw",                      # <-- ACTIVE: Controls callback data ("raw", "contact", or "full")
+        on_success=save_to_database,           # <-- ACTIVE: Callback function per successful URL
+        auto_store=True,                      # <-- ACTIVE: Set to True to save outputs to disk
+
+        # --- RAPIDAPI OVERRIDES (**api_kwargs) ---
+        profile="true",                        # <-- ACTIVE: Example of overriding a default RapidAPI param
+        # contact="false",                     # <-- ALTERNATIVE API KWARG
+        # sources="false",                     # <-- ALTERNATIVE API KWARG
+        # visuals="false",                     # <-- ALTERNATIVE API KWARG
+        # meta="false"                         # <-- ALTERNATIVE API KWARG
+    )
+
+    print(f'Scraping ended in: {time.time() - start} sec..')
+===== examples/basic_usage2.py =====
+import csv
+import time
+import json
+from contact_finder_sdk import ContactFinder
+
+# ── SIMPLE API KEY SETUP ─────────────────────────────────────────────────────
+# 1. To test locally: Paste your REAL key here, save, and run the script.
+API_KEY = "YOUR_RAPIDAPI_KEY_HERE"
+
+# ── LIST A (15 URLs) ─────────────────────────────────────────────────────────
+urls_a = [
+    "https://www.aaastandardroofing.com", "https://str8aboveroofing.com",
+    "https://aceroofingsf.com", "http://www.barnhouseexteriors.com",
+    "http://www.isaacsroofing.com", "http://a-classroofrepairs.com",
+    "https://www.abetterroofing.com", "https://roofmaxx.com/find-a-dealer/california/poway",
+    "https://agroofmiami.com/locations/miami", "https://bastosroofing.com",
+    "https://blueprintroofing.com", "http://www.camachocontractors.com",
+    "https://www.atlantametroroofing.com", "https://www.craddockroofing.com",
+    "https://atlanticexproofing.com/locations/miami",
+]
+
+# ── LIST B (15 URLs) ─────────────────────────────────────────────────────────
+urls_b = [
+    "http://www.eliteroofingservices.com", "http://www.exceptionalexteriorsil.com",
+    "http://www.capstoneroofingaz.com", "https://ar1roofing.com/location/miami",
+    "http://www.rtiservicesinc.com", "https://www.commercialroofinglosangeles.net",
+    "https://www.rencoroofing.com", "https://www.myftconstruction.com",
+    "https://www.realroofingofficial.com", "https://vertexroofing.com",
+    "https://www.advancedroofinghouston.com", "https://tims-emergency-roofing-houston.ueniweb.com",
+    "https://hermeticaroofing.com", "https://sundanceroofingofsfl.com/locations/miami",
+    "https://stellarroofingandsolar.com",
+]
+
+CSV_A_PATH = "urls_project_a.csv"
+CSV_B_PATH = "urls_project_b.csv"
+
+# ── CHOOSE WHAT TO TEST: "lists", "csv", or "both" ───────────────────────────
+TEST_MODE = "both"
+
+def write_csv(path, urls):
+    """Creates a CSV file with a 'url' header column."""
+    with open(path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["url"])
+        for u in urls:
+            writer.writerow([u])
+    print(f"📄 Created {path} with {len(urls)} urls")
+
+def read_csv(csv_path):
+    with open(csv_path, mode="r", encoding="utf-8") as f:
+        return [row["url"] for row in csv.DictReader(f) if row.get("url") and row["url"].strip()]
+
+def save_to_database(data):
+    url = (data or {}).get("url") or ((data or {}).get("data") or {}).get("url", "unknown")
+    print(f"✅ LIVE SUCCESS: {url}")
+
+if __name__ == "__main__":
+    start = time.time()
+
+    # 1. Auto-generate the two CSV files on disk
+    write_csv(CSV_A_PATH, urls_a)
+    write_csv(CSV_B_PATH, urls_b)
+
+    # Sanity check
+    print(f"read_csv check → A: {len(read_csv(CSV_A_PATH))} urls | B: {len(read_csv(CSV_B_PATH))} urls\n")
+
+    # 2. TEST WITH MANUAL LISTS
+    if TEST_MODE in ("lists", "both"):
+        print("\n--- TEST 1: MANUAL LISTS (project_A + project_B) ---")
+        finder_a = ContactFinder(api_key=API_KEY, concurrency=5, project_name="project_A")
+        finder_a.run(urls=urls_a, parse_mode="raw", on_success=save_to_database, auto_store=True, profile="true")
+        print(f"📂 project_A master file: {finder_a.storage.jsonl_path}")
+
+        finder_b = ContactFinder(api_key=API_KEY, concurrency=5, project_name="project_B")
+        finder_b.run(urls=urls_b, parse_mode="raw", on_success=save_to_database, auto_store=True, profile="true")
+        print(f"📂 project_B master file: {finder_b.storage.jsonl_path}")
+
+    # 3. TEST WITH CSV FILES
+    if TEST_MODE in ("csv", "both"):
+        print("\n--- TEST 2: CSV FILES (project_C + project_D) ---")
+        finder_c = ContactFinder(api_key=API_KEY, concurrency=5, project_name="project_C")
+        finder_c.run(file_path=CSV_A_PATH, url_field_name="url", dedup_key="url",
+                     parse_mode="raw", on_success=save_to_database, auto_store=True, profile="true")
+        print(f"📂 project_C master file: {finder_c.storage.jsonl_path}")
+
+        finder_d = ContactFinder(api_key=API_KEY, concurrency=5, project_name="project_D")
+        finder_d.run(file_path=CSV_B_PATH, url_field_name="url", dedup_key="url",
+                     parse_mode="raw", on_success=save_to_database, auto_store=True, profile="true")
+        print(f"📂 project_D master file: {finder_d.storage.jsonl_path}")
+
+    print(f'\nTotal test time: {time.time() - start:.2f} sec..')
+===== grep http:// =====
+contact_finder_sdk/config.py:7:# base_url = "http://132.0.0.1:8000/scrape"        # this for local fastapi
+===== grep https:// =====
+contact_finder_sdk/client.py:18:            self.base_url = f"https://{RAPIDAPI_HOST}/"
+contact_finder_sdk/config.py:6:SCRAPEEG_URL = "https://scrapeeg.org/v1/contact/search"
+contact_finder_sdk/config.py:12:RAPIDAPI_URL = f"https://{RAPIDAPI_HOST}/"
+===== grep rapidapi =====
+contact_finder_sdk/client.py:4:    SCRAPEEG_URL, RAPIDAPI_HOST, RAPIDAPI_DEFAULT_PARAMS,
+contact_finder_sdk/client.py:15:            self.base_url = SCRAPEEG_URL
+contact_finder_sdk/client.py:17:        elif self.source == "rapidapi":
+contact_finder_sdk/client.py:18:            self.base_url = f"https://{RAPIDAPI_HOST}/"
+contact_finder_sdk/client.py:19:            self.headers = {"x-rapidapi-key": api_key, "x-rapidapi-host": RAPIDAPI_HOST, "Content-Type": "application/json"}
+contact_finder_sdk/client.py:21:            raise ValueError("source must be 'website' or 'rapidapi'")
+contact_finder_sdk/client.py:29:        # Start with RapidAPI defaults, add URL, then override with user kwargs
+contact_finder_sdk/client.py:30:        params = {"url": url, **RAPIDAPI_DEFAULT_PARAMS}
+contact_finder_sdk/client.py:32:            if k in RAPIDAPI_DEFAULT_PARAMS:
+contact_finder_sdk/client.py:44:                    async with session.get(self.base_url, headers=self.headers, params=params, timeout=REQUEST_TIMEOUT) as response:
+contact_finder_sdk/config.py:7:# base_url = "http://132.0.0.1:8000/scrape"        # this for local fastapi
+contact_finder_sdk/config.py:10:# ── RapidAPI SDK Settings (For your users) ──────────────────────────────────
+contact_finder_sdk/config.py:11:RAPIDAPI_HOST = "website-contact-finder.p.rapidapi.com"
+contact_finder_sdk/config.py:12:RAPIDAPI_URL = f"https://{RAPIDAPI_HOST}/"
+contact_finder_sdk/config.py:14:# RapidAPI expects string "false"/"false" for these params -- currently not being used
+contact_finder_sdk/config.py:15:RAPIDAPI_DEFAULT_PARAMS = {
+contact_finder_sdk/main.py:12:    # def __init__(self, api_key: str, host: str = "website-contact-finder.p.rapidapi.com", concurrency: int = 25, project_name: str = "default_project", use_vps: bool = False):

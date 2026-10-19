@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # PyPI REQUIRES hyphens here, not underscores!
 name = "contact-finder-sdk"
-version = "1.1.0"
+version = "1.2.0"
 description = "A robust, high-concurrency async SDK for the Website Contact Finder API."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -23,8 +23,13 @@ class ContactFinder:
         self.dedup_key = "url"
         self.parser = ResponseParser()
 
+        # Initialize callbacks to None to prevent AttributeError for SDK users
+        self.on_success = None
+        self.on_cached = None
+        self.on_failure = None
+
     # Added a synchronous wrapper so users don't have to use asyncio
-    def run(self, urls: list[str] = None, file_path: str = None, url_field_name: str = "url", dedup_key: str = "url", on_success=None, parse_mode: str = "raw", auto_store: bool = True, project_name: str = None, **api_kwargs):
+    def run(self, urls: list[str] = None, file_path: str = None, url_field_name: str = "url", dedup_key: str = "url", on_success=None, on_cached=None, on_failure=None, parse_mode: str = "raw", auto_store: bool = True, project_name: str = None, **api_kwargs):
         """Synchronous entry point for the SDK."""
         # Apply per-run file configurations
         self.url_manager.field_name = url_field_name.lower()
@@ -38,6 +43,8 @@ class ContactFinder:
             self.storage = StorageManager(dedup_key=dedup_key.lower(), auto_store=auto_store, project_config=self.local_config)
 
         self.on_success = on_success
+        self.on_cached = on_cached
+        self.on_failure = on_failure
         self.parse_mode = parse_mode
         self.auto_store = auto_store.lower() == "true" if isinstance(auto_store, str) else bool(auto_store)
         self.storage.auto_store = self.auto_store
@@ -80,12 +87,14 @@ class ContactFinder:
         for target_url in urls:
             normalized_url = self.url_manager.normalize_url(target_url)
             if normalized_url in cache:
-                if self.on_success:
+                # Use on_cached if provided, otherwise fallback to on_success
+                cb = self.on_cached or self.on_success
+                if cb:
                     if is_fallback:
                         row = cache[normalized_url] if self.parse_mode == "full" else {k: v for k, v in cache[normalized_url].items() if k in contact_csv_fields}
                     else:
                         row = self.parser.parse(cache[normalized_url], self.parse_mode)
-                    self.on_success(row)
+                    cb(row)
                 cached_count += 1
             elif normalized_url in seen and self.parse_mode != "raw":
                 skip_count += 1
@@ -113,6 +122,8 @@ class ContactFinder:
                         if not self.parser.has_contact_data(full_row):
                             fail_count += 1
                             self.storage.log_failed_url(url, "No contact info found")
+                            if self.on_failure:
+                                self.on_failure(url, "No contact info found")
                             pbar.set_description(f"⚠ EMPTY {(d:=full_row.get('domain') or url)[:20]+(' .. ' if len(d)>20 else ''):<24}")
                             pbar.set_postfix(saved=success_count, cached=cached_count, skipped=skip_count, failed=fail_count, refresh=False)
                             pbar.update(1)
@@ -144,7 +155,10 @@ class ContactFinder:
                         self.storage.append_to_jsonl(json_data, file_path=self.storage.raw_jsonl_path)
                     else:
                         fail_count += 1
-                        self.storage.log_failed_url(url, api_error or "request failed")
+                        reason = api_error or "request failed"
+                        self.storage.log_failed_url(url, reason)
+                        if self.on_failure:
+                            self.on_failure(url, reason)
                         pbar.set_description(f"✖ {url[:20]+(' .. ' if len(url)>20 else ''):<24}")
 
                     pbar.set_postfix(saved=success_count, cached=cached_count, skipped=skip_count, failed=fail_count, refresh=False)
