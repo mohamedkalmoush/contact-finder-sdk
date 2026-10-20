@@ -96,50 +96,15 @@ You don't need to worry about data corruption or crashing scripts:
 
 ---
 
-## 📂 Reading URLs from a File
+## 📂 Reading from a CSV or TXT File
 
-If you have a massive list of URLs, you don't need to load them into a Python list first. Just pass a file path and the SDK will extract the URLs for you.
-
-```python
-finder.run(file_path="my_urls.csv")
-```
-
-That's it — **no column name needed**. The SDK auto-detects the URL column.
-
-### Supported formats
-
-| Extension | How it's read |
-| :--- | :--- |
-| `.csv` | Comma-separated (auto-detects the URL column) |
-| `.tsv` | Tab-separated |
-| `.txt`, `.list`, `.urls`, `.log`, `.dat` | One URL per line (comments with `#` / `//` skipped) |
-| `.json`, `.jsonl` | Extracted from `url` / `website` / `domain` keys |
-
-### Auto-detect (default)
-
-By default `url_field_name="auto"`:
-
-1. **Header keyword match** — looks for a column named `url`, `website`, `domain`, `link`, `href`, or `site` (in that priority order).
-2. **Content fallback** — if no header matches, picks the column where most values look like URLs.
-
-Every run logs the picked column:
-
-```
-[auto-detect] column 2 (header 'website') in my_urls.csv
-```
-
-### Manual override
-
-If auto-detect picks the wrong column, pass it explicitly:
+If you have a massive list of URLs, you don't need to load them into a Python list first. Just pass a `.csv` or `.txt` file. The SDK will automatically read the file, extract the URLs, and process them.
 
 ```python
-finder.run(file_path="my_urls.csv", url_field_name="homepage")
-```
-
-For **headerless CSVs**, use a numeric index:
-
-```python
-finder.run(file_path="my_urls.csv", url_field_name="0")  # first column
+finder.run(
+    file_path="my_urls.csv",    # Path to your CSV or TXT file
+    url_field_name="url",       # The name of the column containing the URLs
+)
 ```
 
 ---
@@ -224,7 +189,7 @@ The Quick Start uses smart defaults that work perfectly for 95% of use cases. Bu
 | :--- | :--- | :--- | :--- |
 | `urls` | `list[str]` | `None` | A direct list of URLs to scrape. |
 | `file_path` | `str` | `None` | Path to a `.csv`, `.tsv`, `.txt`, `.json`, or `.jsonl` file containing URLs. |
-| `url_field_name` | `str` | `"auto"` | Column name or numeric index (e.g. `"0"`). `"auto"` = detect by header keyword or content. |
+| `url_field_name` | `str` | `"auto"` | The name of the column holding URLs. If omitted, the SDK tries to detect it automatically. |
 | `dedup_key` | `str` | `"url"` | The key used to check for duplicates. |
 | `parse_mode` | `str` | `"raw"` | How to format the callback data (`"raw"`, `"contact"`, or `"full"`). |
 | `on_success` | `Callable`| `None` | A function to execute immediately when a URL succeeds. |
