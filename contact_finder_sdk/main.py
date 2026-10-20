@@ -29,10 +29,10 @@ class ContactFinder:
         self.on_failure = None
 
     # Added a synchronous wrapper so users don't have to use asyncio
-    def run(self, urls: list[str] = None, file_path: str = None, url_field_name: str = "url", dedup_key: str = "url", on_success=None, on_cached=None, on_failure=None, parse_mode: str = "raw", auto_store: bool = True, project_name: str = None, **api_kwargs):
+    def run(self, urls: list[str] = None, file_path: str = None, url_field_name: str = "auto", dedup_key: str = "url", on_success=None, on_cached=None, on_failure=None, parse_mode: str = "raw", auto_store: bool = True, project_name: str = None, **api_kwargs):
         """Synchronous entry point for the SDK."""
         # Apply per-run file configurations
-        self.url_manager.field_name = url_field_name.lower()
+        self.url_manager.field_name = (url_field_name or "auto").strip().lower()
         self.storage.dedup_key = dedup_key.lower()
         self.dedup_key = dedup_key.lower()
 

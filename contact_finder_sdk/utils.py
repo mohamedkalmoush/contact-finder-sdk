@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import os
+import re
 
 from contact_finder_sdk.config import config
 
@@ -18,11 +19,58 @@ def _is_comment(line: str) -> bool:
     return line.startswith(_COMMENT_PREFIXES)
 
 
+# ── auto-detect: two regexes ──────────────────────────────────────
+# Priority by alternation order: url > website > domain
+_HEADER_RE = re.compile(r"urls?|websites?|domains?", re.IGNORECASE)
+_VALUE_RE = re.compile(r"^(?:https?://|www\.|[\w-]+\.[a-z]{2,})", re.IGNORECASE)
+_HEADER_WORDS = ("url", "urls", "website", "websites", "domain", "domains")
+
+
+def _header_priority(cell: str):
+    """0 = url, 1 = website, 2 = domain, None = no match."""
+    m = _HEADER_RE.search(str(cell))
+    if not m:
+        return None
+    w = m.group(0).lower()
+    return 0 if w.startswith("url") else 1 if w.startswith("website") else 2
+
+
+def _is_url_value(value: str) -> bool:
+    return bool(_VALUE_RE.search(str(value).strip()))
+
+
+def _auto_detect_column(rows):
+    """Return (col, has_header, reason) or (None, False, '')."""
+    if not rows:
+        return None, False, ""
+
+    header = [str(h).strip() for h in rows[0]]
+
+    # Pattern 1 — header keyword, priority by alternation order
+    best_prio, best_col = None, None
+    for col, cell in enumerate(header):
+        p = _header_priority(cell)
+        if p is not None and (best_prio is None or p < best_prio):
+            best_prio, best_col = p, col
+    if best_col is not None:
+        return best_col, True, f"header '{header[best_col]}'"
+
+    # Pattern 2 — content: first column where most values are URLs
+    n = max((len(r) for r in rows), default=0)
+    for col in range(n):
+        vals = [r[col].strip() for r in rows if len(r) > col and r[col].strip()][:50]
+        if vals and sum(1 for v in vals if _is_url_value(v)) / len(vals) >= 0.5:
+            row0 = header[col] if col < len(header) else ""
+            return col, not _is_url_value(row0), "content"
+
+    return None, False, ""
+
+
 class URLManager:
-    def __init__(self, urls_file_path: str = None, field_name: str = "url", project_config=None):
+    def __init__(self, urls_file_path: str = None, field_name: str = "auto", project_config=None):
         self.config = project_config if project_config is not None else config
         self.urls_file_path = urls_file_path
-        self.field_name = (field_name or "url").strip().lower()
+        self.field_name = (field_name or "auto").strip().lower()
 
     def normalize_url(self, url: str) -> str:
         if not url: return ""
@@ -69,9 +117,10 @@ class URLManager:
                 continue
             if first_line:
                 first_line = False
-                # Header skip: exact match only (case-insensitive, stripped).
-                # A line like "https://a.com" is never mistaken for a header.
-                if line.lower() == field:
+                if field == "auto":
+                    if line.lower() in _HEADER_WORDS and not _is_url_value(line):
+                        continue
+                elif line.lower() == field:
                     continue
             out.append(line)
         return out
@@ -99,18 +148,29 @@ class URLManager:
 
     def _extract_json_urls(self, obj) -> list[str]:
         field = self.field_name
+        auto = (field == "auto")
+
         if isinstance(obj, str):
             s = obj.strip()
-            return [s] if s else []
+            if not s:
+                return []
+            return [s] if (not auto or _is_url_value(s)) else []
+
         if isinstance(obj, list):
             out: list[str] = []
             for item in obj:
                 out.extend(self._extract_json_urls(item))
             return out
+
         if isinstance(obj, dict):
-            value = obj.get(field)
-            if isinstance(value, str) and value.strip():
-                return [value.strip()]
+            if auto:
+                keys = [k for word in _HEADER_WORDS for k in obj if k.lower() == word]
+            else:
+                keys = [field]
+            for key in keys:
+                v = obj.get(key)
+                if isinstance(v, str) and v.strip():
+                    return [v.strip()]
             out: list[str] = []
             for v in obj.values():
                 if isinstance(v, (dict, list)):
@@ -130,8 +190,21 @@ class URLManager:
 
         field = self.field_name
 
-        # Numeric index = explicit "column N, headerless". No guessing.
-        if field.isdigit():
+        if field == "auto":
+            col, has_header, reason = _auto_detect_column(rows)
+            if col is None:
+                header = [h.strip() for h in rows[0]]
+                raise ValueError(
+                    f"Could not auto-detect a URL column in "
+                    f"{os.path.basename(source) or 'input'}. "
+                    f"Detected columns: {header}. "
+                    f"Pass url_field_name=... explicitly, "
+                    f"or a numeric index (e.g. '0') if the file has no header."
+                )
+            print(f"[auto-detect] column {col + 1} ({reason}) in "
+                  f"{os.path.basename(source) or 'input'}")
+            body = rows[1:] if has_header else rows
+        elif field.isdigit():
             col = int(field)
             max_cols = max(len(r) for r in rows)
             if col >= max_cols:
