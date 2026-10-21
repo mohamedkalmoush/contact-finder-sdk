@@ -217,12 +217,14 @@ class URLManager:
         else:
             header = [h.strip().lower() for h in rows[0]]
             if field not in header:
+                shown_cols = header[:10]
+                cols_str = ", ".join(f"'{c}'" for c in shown_cols)
+                if len(header) > 10:
+                    cols_str += f" (and {len(header) - 10} more)"
                 raise ValueError(
-                    f"Column {field!r} not found in "
-                    f"{os.path.basename(source) or 'input'}. "
-                    f"Detected columns: {header}. "
-                    f"Pass the matching name via url_field_name=..., "
-                    f"or a numeric index (e.g. '0' for column 0) if the file has no header."
+                    f"Column '{field}' not found. "
+                    f"Available columns: {cols_str}. "
+                    f"Please check the column name."
                 )
             col = header.index(field)
             body = rows[1:]
